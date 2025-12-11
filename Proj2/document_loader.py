@@ -5,6 +5,7 @@ import docx2txt
 from PyPDF2 import PdfReader
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from openai import OpenAI
 
 # 引入多模态需要的库
 import fitz  # PyMuPDF, 用于PDF图片提取
@@ -23,6 +24,9 @@ class DocumentLoader:
         
         # 配置 Dashscope API (用于多模态)
         dashscope.api_key = config.OPENAI_API_KEY
+
+        self.client = OpenAI(api_key=config.OPENAI_API_KEY, base_url=config.OPENAI_API_BASE)
+
         
     def _describe_image(self, image_bytes: bytes, source_info: str, context_text: str = "") -> str:
         """
@@ -85,6 +89,45 @@ class DocumentLoader:
         finally:
             if os.path.exists("temp_image_processing.png"):
                 os.remove("temp_image_processing.png")
+
+    def _generate_summary(self, text: str) -> str:
+        """
+        [内部辅助函数] 使用 LLM 生成文本摘要
+        
+        **根据要求，使用 config.MODEL_NAME 模型生成摘要。**
+        """
+        if not text.strip():
+            return ""
+        
+        # 摘要提示词 (System Prompt: 定义角色和任务)
+        system_instruction = "你是一位专业的总结助手。请将用户提供的完整文件内容总结为一个简洁、准确的段落，保留核心要点和技术术语。总结内容需精炼，40字以内。"
+        
+        # 限制 LLM 输入长度，避免摘要任务本身超长
+        MAX_INPUT_LENGTH = 6000 # 设定一个合理的输入长度，防止API限制
+        if len(text) > MAX_INPUT_LENGTH:
+             text_to_summarize = text[:MAX_INPUT_LENGTH] + "...\n[文本已截断，只总结前部分内容]"
+        else:
+             text_to_summarize = text
+             
+        messages = [
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": text_to_summarize} # 直接将文本作为用户输入“上传”给模型
+        ]
+
+        try:
+            response = self.client.chat.completions.create(
+                model=config.MODEL_NAME, messages=messages, temperature=0.7, max_tokens=1500
+            )
+
+            
+            summary = "片段摘要：" + response.choices[0].message.content
+
+        except Exception as e:
+            print(f" ! 摘要生成失败: {e}")
+            # 摘要失败时，返回前200字符作为备用“摘要”
+            return text[:200] + ("... (摘要失败，使用前段文本)" if len(text) > 200 else "")
+        
+        return summary
 
     def load_pdf(self, file_path: str) -> List[Dict]:
         """加载PDF文件，支持多模态"""
@@ -218,27 +261,41 @@ class DocumentLoader:
         
         if ext == ".pdf":
             # load_pdf 返回的是 list[dict]
+            over_all_text = ""
             pages = self.load_pdf(file_path)
+            for p in pages:
+                over_all_text += p["text"] + "\n"
+            # 生成摘要并附加到每页内容后面
+            summary = self._generate_summary(over_all_text)
+
             for i, p in enumerate(pages, 1):
                 documents.append({
                     "content": p["text"],
                     "filename": filename,
                     "filepath": file_path,
                     "filetype": ext,
-                    "page_number": i
+                    "page_number": i,
+                    "summary": summary
                 })
             return documents
             
         elif ext == ".pptx":
             # load_pptx 返回的是 list[dict]
             slides = self.load_pptx(file_path)
+            over_all_text = ""
+            for s in slides:
+                over_all_text += s["text"] + "\n"
+            # 生成摘要并附加到每页内容后面
+            summary = self._generate_summary(over_all_text)
+
             for i, s in enumerate(slides, 1):
                 documents.append({
                     "content": s["text"],
                     "filename": filename,
                     "filepath": file_path,
                     "filetype": ext,
-                    "page_number": i
+                    "page_number": i,
+                    "summary": summary
                 })
             return documents
         
@@ -252,12 +309,15 @@ class DocumentLoader:
 
         # 对于 docx, txt, py，作为一个整体块返回（或者你可以在这里做初步分割）
         if content:
+            summary = self._generate_summary(content)
+
             documents.append({
                 "content": content,
                 "filename": filename,
                 "filepath": file_path,
                 "filetype": ext,
-                "page_number": 1 
+                "page_number": 1,
+                "summary": summary 
             })
             
         return documents
