@@ -63,6 +63,15 @@ class VectorStore:
         except Exception as e:
             print(f"获取embedding失败: {e}")
             return []
+    
+    def is_file_processed(self, filename: str) -> bool:
+        """检查某个文件是否已经存在于向量库中"""
+        # 通过 metadata 过滤查找
+        result = self.collection.get(
+            where={"filename": filename},
+            limit=1 # 只要找到1条记录，就说明存在
+        )
+        return len(result['ids']) > 0
 
 
     def add_documents(self, chunks: List[Dict[str, Any]]) -> None:
@@ -118,7 +127,7 @@ class VectorStore:
         # 3. 批量添加到ChromaDB collection
         if ids:
             # 由于我们已确保 metadatas 列表中的字典非空，故可以直接添加
-            self.collection.add(
+            self.collection.upsert(
                 embeddings=embeddings,
                 documents=documents,
                 metadatas=metadatas,
