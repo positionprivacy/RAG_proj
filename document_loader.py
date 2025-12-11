@@ -44,15 +44,15 @@ class DocumentLoader:
 
             print(f"  > 正在调用 Qwen-VL 理解图片 ({source_info})...")
             
-            # --- 修改重点：构建包含上下文的 Prompt ---
-            # 截取一部分上下文，防止token溢出（比如取前1000字），通常一页PPT/PDF字数不会太多
+            # --- 构建包含上下文的 Prompt ---
             safe_context = context_text[:1000] if context_text else "无"
             
             prompt_content = (
                 f"这张图出现在课程课件中。\n"
                 f"【该页面的文字内容参考】：{safe_context}\n\n"
-                f"请结合上下文详细描述图片内容，提取其中的文字、公式或图表含义。"
-                f"如果图片与上下文强相关，请指出它们的关系。"
+                f"如果图片与上下文强相关，请结合上下文描述图片内容，提取其中的文字、公式或图表含义。"
+                f"如果图片与上下文弱相关或无直接关联，请不要废话精简概括。"
+                f"请不要直接输出图片与上下文的相关性。"
             )
             # -------------------------------------
 
@@ -61,7 +61,7 @@ class DocumentLoader:
                     "role": "user",
                     "content": [
                         {"image": f"file://{os.path.abspath(temp_img_path)}"},
-                        {"text": prompt_content} # 这里使用新的 prompt
+                        {"text": prompt_content} 
                     ]
                 }
             ]
@@ -71,9 +71,10 @@ class DocumentLoader:
                 messages=messages
             )
             
-            # ... (后续处理 response 的代码保持不变) ...
+            # ... 处理 response ...
             if response.status_code == HTTPStatus.OK:
                 desc = response.output.choices[0].message.content[0]['text']
+                print(f"{desc}")
                 # ...
                 return f"\n[图片内容描述]: {desc}\n"
             # ...
