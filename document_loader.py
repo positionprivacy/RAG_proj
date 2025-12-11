@@ -5,7 +5,6 @@ import docx2txt
 from PyPDF2 import PdfReader
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
-from openai import OpenAI
 
 # 引入多模态需要的库
 import fitz  # PyMuPDF, 用于PDF图片提取
@@ -24,36 +23,45 @@ class DocumentLoader:
         
         # 配置 Dashscope API (用于多模态)
         dashscope.api_key = config.OPENAI_API_KEY
-
-        self.client = OpenAI(api_key=config.OPENAI_API_KEY, base_url=config.OPENAI_API_BASE)
-
         
-    def _describe_image(self, image_bytes: bytes, source_info: str) -> str:
+    def _describe_image(self, image_bytes: bytes, source_info: str, context_text: str = "") -> str:
         """
         [内部辅助函数] 调用 Qwen-VL 对图片进行描述
+        增加了 context_text 参数，用于传入当前页面的文字信息
         """
-        # 如果没有配置 VL 模型，直接返回空
+        # ... (前面的代码保持不变: 检查配置, 保存临时文件, 检查文件大小) ...
         if not hasattr(config, "VL_MODEL_NAME") or not config.VL_MODEL_NAME:
             return ""
-
+            
         try:
-            # 将图片保存为临时文件以便上传 (Qwen-VL目前主要支持URL或本地路径)
+            # ... (保存临时文件 temp_img_path 的代码保持不变) ...
             temp_img_path = "temp_image_processing.png"
             with open(temp_img_path, "wb") as f:
                 f.write(image_bytes)
             
-            # 只有大于 5KB 的图片才处理（忽略图标、装饰线）
             if os.path.getsize(temp_img_path) < 5 * 1024:
                 return ""
 
             print(f"  > 正在调用 Qwen-VL 理解图片 ({source_info})...")
             
+            # --- 构建包含上下文的 Prompt ---
+            safe_context = context_text[:1000] if context_text else "无"
+            
+            prompt_content = (
+                f"这张图出现在课程课件中。\n"
+                f"【该页面的文字内容参考】：{safe_context}\n\n"
+                f"如果图片与上下文强相关，请结合上下文描述图片内容，提取其中的文字、公式或图表含义。"
+                f"如果图片与上下文弱相关或无直接关联，请不要废话精简概括。"
+                f"请不要直接输出图片与上下文的相关性。"
+            )
+            # -------------------------------------
+
             messages = [
                 {
                     "role": "user",
                     "content": [
                         {"image": f"file://{os.path.abspath(temp_img_path)}"},
-                        {"text": "这张图出现在课程课件中。请详细描述图片内容，提取其中的文字、公式或图表含义。"}
+                        {"text": prompt_content} 
                     ]
                 }
             ]
@@ -63,64 +71,20 @@ class DocumentLoader:
                 messages=messages
             )
             
+            # ... 处理 response ...
             if response.status_code == HTTPStatus.OK:
                 desc = response.output.choices[0].message.content[0]['text']
-                if desc:
-                    print(f"  ✔️ 图片处理成功: {desc}")
-                    # 返回格式化的描述
-                else:
-                    print(f"  ! 图片无描述内容")
+                print(f"{desc}")
+                # ...
                 return f"\n[图片内容描述]: {desc}\n"
-            else:
-                print(f"  ! 图片处理失败: {response.message}")
-                return ""
-                
+            # ...
+            
         except Exception as e:
-            print(f"  ! 图片处理异常: {e}")
+            # ...
             return ""
         finally:
-            # 清理临时文件
             if os.path.exists("temp_image_processing.png"):
                 os.remove("temp_image_processing.png")
-
-    def _generate_summary(self, text: str) -> str:
-        """
-        [内部辅助函数] 使用 LLM 生成文本摘要
-        
-        **根据要求，使用 config.MODEL_NAME 模型生成摘要。**
-        """
-        if not text.strip():
-            return ""
-        
-        # 摘要提示词 (System Prompt: 定义角色和任务)
-        system_instruction = "你是一位专业的总结助手。请将用户提供的完整文件内容总结为一个简洁、准确的段落，保留核心要点和技术术语。总结内容需精炼，40字以内。"
-        
-        # 限制 LLM 输入长度，避免摘要任务本身超长
-        MAX_INPUT_LENGTH = 6000 # 设定一个合理的输入长度，防止API限制
-        if len(text) > MAX_INPUT_LENGTH:
-             text_to_summarize = text[:MAX_INPUT_LENGTH] + "...\n[文本已截断，只总结前部分内容]"
-        else:
-             text_to_summarize = text
-             
-        messages = [
-            {"role": "system", "content": system_instruction},
-            {"role": "user", "content": text_to_summarize} # 直接将文本作为用户输入“上传”给模型
-        ]
-
-        try:
-            response = self.client.chat.completions.create(
-                model=config.MODEL_NAME, messages=messages, temperature=0.7, max_tokens=1500
-            )
-
-            
-            summary = "片段摘要：" + response.choices[0].message.content
-
-        except Exception as e:
-            print(f" ! 摘要生成失败: {e}")
-            # 摘要失败时，返回前200字符作为备用“摘要”
-            return text[:200] + ("... (摘要失败，使用前段文本)" if len(text) > 200 else "")
-        
-        return summary
 
     def load_pdf(self, file_path: str) -> List[Dict]:
         """加载PDF文件，支持多模态"""
@@ -139,23 +103,26 @@ class DocumentLoader:
             print("提示: 未安装 PyMuPDF，跳过图片识别")
 
         for i, page in enumerate(reader.pages):
-            page_text = page.extract_text() or ""
+            page_text = page.extract_text() or "" # 这里已经获取了文本
+            
             # --- 多模态图片处理逻辑 Start ---
             image_descriptions = ""
             if doc_fitz and i < len(doc_fitz):
-                # 获取该页所有图片
                 img_list = doc_fitz[i].get_images(full=True)
                 for img_idx, img in enumerate(img_list):
                     xref = img[0]
                     base_image = doc_fitz.extract_image(xref)
                     image_bytes = base_image["image"]
                     
-                    # 调用 Qwen-VL
-                    desc = self._describe_image(image_bytes, source_info=f"Page {i+1} Img {img_idx+1}")
+                    # --- 修改重点：传入 page_text ---
+                    desc = self._describe_image(
+                        image_bytes, 
+                        source_info=f"Page {i+1} Img {img_idx+1}",
+                        context_text=page_text  # 传入当前页文本
+                    )
                     image_descriptions += desc
             # --- 多模态图片处理逻辑 End ---
 
-            # 拼接文本和图片描述
             full_content = f"--- 第 {i+1} 页 ---\n{page_text}\n{image_descriptions}"
             results.append({"text": full_content})
 
@@ -172,32 +139,45 @@ class DocumentLoader:
 
         for i, slide in enumerate(prs.slides):
             slide_text_parts = []
+            images_to_process = [] # 临时存储需要处理的图片对象
             
-            # 遍历幻灯片中的所有形状
+            # --- 第一轮循环：提取文本 并 收集图片对象 ---
             for shape in slide.shapes:
-                # 1. 提取文本框内容
+                # 1. 提取文本框
                 if hasattr(shape, "text_frame") and shape.text_frame:
                     slide_text_parts.append(shape.text_frame.text)
                 
-                # 2. 提取表格内容
+                # 2. 提取表格
                 if shape.has_table:
                     for row in shape.table.rows:
                         row_text = " | ".join([cell.text_frame.text for cell in row.cells])
                         slide_text_parts.append(row_text)
-
-                # 3. 提取图片并调用 Qwen-VL (加分项)
-                # MSO_SHAPE_TYPE.PICTURE = 13
+                
+                # 3. 标记图片（先不处理，存起来）
                 if shape.shape_type == 13: 
-                    try:
-                        image_bytes = shape.image.blob
-                        desc = self._describe_image(image_bytes, source_info=f"Slide {i+1}")
-                        slide_text_parts.append(desc)
-                    except Exception as e:
-                        pass # 忽略图片读取错误
+                    images_to_process.append(shape)
 
-            full_text = "\n".join(slide_text_parts)
-            formatted_text = f"--- 幻灯片 {i+1} ---\n{full_text}\n"
-            results.append({"text": formatted_text})
+            # 组合当前页所有文本
+            full_slide_text = "\n".join(slide_text_parts)
+
+            # --- 第二轮循环：集中处理图片（此时已有完整文本） ---
+            image_descriptions = []
+            for img_shape in images_to_process:
+                try:
+                    image_bytes = img_shape.image.blob
+                    # --- 修改重点：传入 full_slide_text ---
+                    desc = self._describe_image(
+                        image_bytes, 
+                        source_info=f"Slide {i+1}",
+                        context_text=full_slide_text
+                    )
+                    image_descriptions.append(desc)
+                except Exception as e:
+                    pass 
+
+            # 拼接最终结果：文本 + 图片描述
+            final_text = f"--- 幻灯片 {i+1} ---\n{full_slide_text}\n" + "".join(image_descriptions)
+            results.append({"text": final_text})
 
         return results
 
@@ -238,41 +218,27 @@ class DocumentLoader:
         
         if ext == ".pdf":
             # load_pdf 返回的是 list[dict]
-            over_all_text = ""
             pages = self.load_pdf(file_path)
-            for p in pages:
-                over_all_text += p["text"] + "\n"
-            # 生成摘要并附加到每页内容后面
-            summary = self._generate_summary(over_all_text)
-
             for i, p in enumerate(pages, 1):
                 documents.append({
                     "content": p["text"],
                     "filename": filename,
                     "filepath": file_path,
                     "filetype": ext,
-                    "page_number": i,
-                    "summary": summary
+                    "page_number": i
                 })
             return documents
             
         elif ext == ".pptx":
             # load_pptx 返回的是 list[dict]
             slides = self.load_pptx(file_path)
-            over_all_text = ""
-            for s in slides:
-                over_all_text += s["text"] + "\n"
-            # 生成摘要并附加到每页内容后面
-            summary = self._generate_summary(over_all_text)
-
             for i, s in enumerate(slides, 1):
                 documents.append({
                     "content": s["text"],
                     "filename": filename,
                     "filepath": file_path,
                     "filetype": ext,
-                    "page_number": i,
-                    "summary": summary
+                    "page_number": i
                 })
             return documents
         
@@ -286,15 +252,12 @@ class DocumentLoader:
 
         # 对于 docx, txt, py，作为一个整体块返回（或者你可以在这里做初步分割）
         if content:
-            summary = self._generate_summary(content)
-
             documents.append({
                 "content": content,
                 "filename": filename,
                 "filepath": file_path,
                 "filetype": ext,
-                "page_number": 1,
-                "summary": summary 
+                "page_number": 1 
             })
             
         return documents

@@ -168,6 +168,8 @@ class RAGAgent:
         messages.append({"role": "user", "content": user_text})
 
         try:
+
+            print(f"投喂内容：{messages}")
             response = self.client.chat.completions.create(
                 model=self.model, messages=messages, temperature=0.7
             )

@@ -93,7 +93,7 @@ class TextSplitter:
             # 这里我们遵循老师模板，不做切分。
             if filetype in [".pdf", ".pptx"]:
                 chunk_data = {
-                    "content": doc.get("summary", "") + content,
+                    "content": content,
                     "filename": filename,
                     "filepath": doc.get("filepath", ""),
                     "filetype": filetype,
@@ -108,7 +108,7 @@ class TextSplitter:
                 chunks = self.split_text(content)
                 for i, chunk in enumerate(chunks):
                     chunk_data = {
-                        "content": doc.get("summary", "") + chunk,
+                        "content": chunk,
                         "filename": filename,
                         "filepath": doc.get("filepath", ""),
                         "filetype": filetype,

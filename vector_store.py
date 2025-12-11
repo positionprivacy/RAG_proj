@@ -1,6 +1,6 @@
 import os
 from typing import List, Dict, Any # 引入Any以更好地支持元数据类型
-import random
+
 import chromadb
 from chromadb.config import Settings
 from openai import OpenAI
@@ -63,54 +63,7 @@ class VectorStore:
         except Exception as e:
             print(f"获取embedding失败: {e}")
             return []
-    def search_hybrid(self, query: str, top_k: int = 3, pool_size: int = 20) -> List[Dict]:
-        """
-        混合检索策略 (Anchor & Explore)：
-        用于解决"出题重复"问题，同时保证相关性。
-        
-        策略：
-        1. 检索 Top-pool_size (例如前20个) 相关文档。
-        2. 必定保留 Rank 1 文档 (锚点)，确保核心知识准确。
-        3. 从剩余的 pool_size-1 个文档中，随机采样 top_k-1 个 (探索)。
-        """
-        query_embedding = self.get_embedding(query)
-        if not query_embedding: return []
-
-        # 1. 扩大检索范围 (Retrieve Top-N)
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=pool_size, 
-            include=['documents', 'metadatas', 'distances']
-        )
-        
-        if not results['documents']: return []
-
-        # 解包数据
-        candidates = []
-        docs = results['documents'][0]
-        metas = results['metadatas'][0]
-        dists = results['distances'][0]
-
-        for doc, meta, dist in zip(docs, metas, dists):
-            candidates.append({"content": doc, "metadata": meta, "distance": dist})
-
-        if not candidates: return []
-
-        # 2. 核心逻辑：锚点 + 随机
-        final_selection = []
-        
-        # (A) 锚点：放入相关度最高的那个
-        final_selection.append(candidates[0])
-        
-        # (B) 探索：从剩下的里面随机选
-        remaining = candidates[1:]
-        # 需要选取的数量
-        sample_count = min(len(remaining), top_k - 1)
-        
-        if sample_count > 0:
-            final_selection.extend(random.sample(remaining, sample_count))
-            
-        return final_selection
+    
     def is_file_processed(self, filename: str) -> bool:
         """检查某个文件是否已经存在于向量库中"""
         # 通过 metadata 过滤查找
@@ -170,7 +123,6 @@ class VectorStore:
                 documents.append(content)
                 metadatas.append(metadata)
                 embeddings.append(embedding)
-                print(f"准备添加文档块 ID: {unique_id}, 内容: {content}")
 
         # 3. 批量添加到ChromaDB collection
         if ids:
