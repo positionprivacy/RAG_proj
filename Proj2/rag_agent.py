@@ -25,20 +25,50 @@ class RAGAgent:
         """
         TODO: 实现并调整系统提示词，使其符合课程助教的角色和回答策略
         """
-        self.system_prompt = """你是这门课程的助教..."""
+        self.system_prompt = (
+            "你是一位友好、专业且细心的课程助教，正在回答学生关于课程材料和作业的问题。\n"
+            "你的回答必须严格基于提供的【课程内容】上下文。\n"
+            "**回答策略:**\n"
+            "1. 仔细阅读【课程内容】。\n"
+            "2. 基于这些内容，用清晰、简洁的中文回答学生的问题。\n"
+            "3. 如果【课程内容】中没有足够的信息来回答问题，请礼貌地告知学生：'根据我目前的课程材料，我无法找到关于这个问题确切的答案。'\n"
+            "4. 务必在回答的末尾，使用 Markdown 格式（例如 `[文件名 - 页码X]`）列出所有你引用到的**来源信息**，以便学生查阅。\n"
+            "5. 保持助教的专业和鼓励语气。"
+        )
 
     def retrieve_context(
         self, query: str, top_k: int = TOP_K
     ) -> Tuple[str, List[Dict]]:
         """检索相关上下文
-        TODO: 实现检索相关上下文
+        实现检索相关上下文
         要求：
         1. 使用向量数据库检索相关文档
         2. 格式化检索结果，构建上下文字符串
         3. 每个检索结果需要包含来源信息（文件名和页码）
         4. 返回格式化的上下文字符串和原始检索结果列表
         """
-        pass
+        
+        # 1. 使用向量数据库检索相关文档
+        retrieved_docs = self.vector_store.search(query=query, top_k=top_k)
+        
+        context_parts: List[str] = []
+
+        # 2. 格式化检索结果，构建上下文字符串
+        for i, doc in enumerate(retrieved_docs):
+            content = doc.get("content", "")
+            metadata = doc.get("metadata", {})
+            file_name = metadata.get("file_name", "未知文件")
+            page_label = metadata.get("page_label", "未知页")
+            
+            # 3. 每个检索结果包含来源信息
+            # 格式化上下文，便于LLM处理
+            source_info = f"[来源: {file_name} - 页码{page_label}]"
+            context_parts.append(f"--- 课程内容片段 {i+1} ---\n{content}\n{source_info}\n")
+            
+        context = "\n".join(context_parts)
+        
+        # 4. 返回格式化的上下文字符串和原始检索结果列表
+        return context, retrieved_docs
 
     def generate_response(
         self,
@@ -66,7 +96,21 @@ class RAGAgent:
         3. 包含来源信息（文件名和页码）
         4. 返回用户提示词
         """
-        user_text = """"""
+        # 构造用户提示词，将上下文、问题和来源信息全部打包
+        user_text = f"""
+请基于下面提供的【课程内容】来回答学生的问题。
+
+---
+【学生问题】
+{query}
+
+---
+【课程内容】
+{context}
+
+---
+请严格按照系统提示词的要求来组织你的回答。
+"""
 
         messages.append({"role": "user", "content": user_text})
         
@@ -100,13 +144,16 @@ class RAGAgent:
         返回:
             生成的回答
         """
+        # 核心RAG流程：检索 -> 增强 -> 生成
         context, retrieved_docs = self.retrieve_context(query, top_k=top_k)
 
         if not context:
-            context = "（未检索到特别相关的课程材料）"
+            # 当未检索到任何内容时的默认上下文
+            context = "（未检索到特别相关的课程材料，请告知学生）"
 
         answer = self.generate_response(query, context, chat_history)
 
+        # 这里我们只返回了回答，如果您希望在最终结果中包含检索到的文档，可以修改返回类型
         return answer
 
     def chat(self) -> None:
@@ -123,11 +170,17 @@ class RAGAgent:
 
                 if not query:
                     continue
+                
+                # 检查退出命令
+                if query.lower() in ["quit", "exit", "退出"]:
+                    print("\n助教: 感谢您的提问，再见！")
+                    break
 
                 answer = self.answer_question(query, chat_history=chat_history)
 
                 print(f"\n助教: {answer}")
 
+                # 更新对话历史 (仅存储用户查询和助教回答，用于维护上下文)
                 chat_history.append({"role": "user", "content": query})
                 chat_history.append({"role": "assistant", "content": answer})
 
