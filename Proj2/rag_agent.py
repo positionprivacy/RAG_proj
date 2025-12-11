@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 
 from openai import OpenAI
 
@@ -49,7 +49,7 @@ class RAGAgent:
         """
         
         # 1. 使用向量数据库检索相关文档
-        retrieved_docs = self.vector_store.search(query=query, top_k=top_k)
+        retrieved_docs: List[Dict[str, Any]] = self.vector_store.search(query=query, top_k=top_k)
         
         context_parts: List[str] = []
 
@@ -57,12 +57,19 @@ class RAGAgent:
         for i, doc in enumerate(retrieved_docs):
             content = doc.get("content", "")
             metadata = doc.get("metadata", {})
-            file_name = metadata.get("file_name", "未知文件")
-            page_label = metadata.get("page_label", "未知页")
+            
+            # --- START: 适配上游 chunk 格式 ---
+            # 上游 chunk 格式中，文件信息和页码是顶层元数据
+            file_name = metadata.get("filename", "未知文件") # 使用 filename 键
+            page_number = metadata.get("page_number", 0)    # 使用 page_number 键
+            
+            # 格式化页码：如果 page_number > 0，则显示页码；否则显示“无页码”
+            page_label = f"页码{page_number}" if page_number else "无页码"
+            # --- END: 适配上游 chunk 格式 ---
             
             # 3. 每个检索结果包含来源信息
             # 格式化上下文，便于LLM处理
-            source_info = f"[来源: {file_name} - 页码{page_label}]"
+            source_info = f"[来源: {file_name} - {page_label}]"
             context_parts.append(f"--- 课程内容片段 {i+1} ---\n{content}\n{source_info}\n")
             
         context = "\n".join(context_parts)
@@ -97,6 +104,8 @@ class RAGAgent:
         4. 返回用户提示词
         """
         # 构造用户提示词，将上下文、问题和来源信息全部打包
+
+        print("生成回答时使用的上下文片段:", {context})
         user_text = f"""
 请基于下面提供的【课程内容】来回答学生的问题。
 
@@ -117,8 +126,8 @@ class RAGAgent:
         # 多模态接口示意（如需添加图片支持，可参考以下格式）：
         # content_parts = [{"type": "text", "text": user_text}]
         # content_parts.append({
-        #     "type": "image_url",
-        #     "image_url": {"url": f"data:image/png;base64,{base64_image}"}
+        #    "type": "image_url",
+        #    "image_url": {"url": f"data:image/png;base64,{base64_image}"}
         # })
         # messages.append({"role": "user", "content": content_parts})
 
@@ -133,7 +142,7 @@ class RAGAgent:
 
     def answer_question(
         self, query: str, chat_history: Optional[List[Dict]] = None, top_k: int = TOP_K
-    ) -> Dict[str, any]:
+    ) -> str: # 修改返回类型为 str (根据函数体)
         """回答问题
         
         参数:
@@ -145,7 +154,7 @@ class RAGAgent:
             生成的回答
         """
         # 核心RAG流程：检索 -> 增强 -> 生成
-        context, retrieved_docs = self.retrieve_context(query, top_k=top_k)
+        context, retrieved_docs = self.retrieve_context(query, top_k=top_k) # 
 
         if not context:
             # 当未检索到任何内容时的默认上下文

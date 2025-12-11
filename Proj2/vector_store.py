@@ -1,5 +1,5 @@
 import os
-from typing import List, Dict
+from typing import List, Dict, Any # 引入Any以更好地支持元数据类型
 
 import chromadb
 from chromadb.config import Settings
@@ -65,8 +65,11 @@ class VectorStore:
             return []
 
 
-    def add_documents(self, chunks: List[Dict[str, str]]) -> None:
+    def add_documents(self, chunks: List[Dict[str, Any]]) -> None:
         """添加文档块到向量数据库
+        
+        **已根据上游切分代码的输出格式进行适配和修正，解决了metadatas为空的ValueError问题。**
+
         实现文档块添加到向量数据库
         要求：
         1. 遍历文档块
@@ -84,20 +87,37 @@ class VectorStore:
         # ChromaDB要求ID是字符串，我们使用文档块的索引作为ID
         for i, chunk in enumerate(tqdm(chunks, desc="正在生成和添加文档向量")):
             content = chunk.get("content", "")
-            metadata = chunk.get("metadata", {})
+            
+            # --- START: 修复和适配切分代码的输出结构 ---
+            # 从 chunk 字典中提取所有非 'content' 键作为元数据
+            # 您的 chunk 格式中，所有信息（如 filename, filetype, page_number等）
+            # 都在顶层，这里将它们全部提取为元数据。
+            metadata = {k: v for k, v in chunk.items() if k != "content"}
+            
+            # **关键修复：确保 metadata 字典非空，避免 ChromaDB 的 ValueError**
+            # 如果元数据字典是空的，为其添加一个虚拟键，以通过 ChromaDB 的校验
+            if not metadata:
+                 metadata = {"_source": "virtual"}
+            
+            # 生成唯一的ID。使用文件的路径和块ID是最佳实践。
+            # 这里对文件路径进行清理，确保生成的ID是合法的字符串。
+            file_path = str(metadata.get("filepath", "no_path")).replace(os.sep, "_").replace("/", "_").replace("\\", "_")
+            unique_id = f"{file_path}_{metadata.get('chunk_id', i)}_{i}" # 额外加上迭代i确保极端情况下唯一性
+            # --- END: 修复和适配切分代码的输出结构 ---
             
             # 1. 获取embedding向量
             embedding = self.get_embedding(content)
             
-            if embedding:
+            if embedding and content.strip(): # 确保内容和向量都有效
                 # 2. 收集数据准备批量添加
-                ids.append(f"doc_{i}")
+                ids.append(unique_id)
                 documents.append(content)
                 metadatas.append(metadata)
                 embeddings.append(embedding)
 
         # 3. 批量添加到ChromaDB collection
         if ids:
+            # 由于我们已确保 metadatas 列表中的字典非空，故可以直接添加
             self.collection.add(
                 embeddings=embeddings,
                 documents=documents,
@@ -117,8 +137,8 @@ class VectorStore:
         1. 首先获取查询文本的embedding向量（调用self.get_embedding）
         2. 使用self.collection进行向量搜索, 得到top_k个结果
         3. 格式化返回结果，每个结果包含：
-           - content: 文档内容
-           - metadata: 元数据（文件名、页码等）
+            - content: 文档内容
+            - metadata: 元数据（文件名、页码等）
         4. 返回格式化的结果列表
         """
 
