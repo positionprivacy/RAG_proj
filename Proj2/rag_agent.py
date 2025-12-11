@@ -106,7 +106,6 @@ class RAGAgent:
         """
         # 构造用户提示词，将上下文、问题和来源信息全部打包
 
-        print("生成回答时使用的上下文片段:", {context})
         user_text = f"""
 请基于下面提供的【课程内容】来回答学生的问题。
 
@@ -133,6 +132,8 @@ class RAGAgent:
         # messages.append({"role": "user", "content": content_parts})
 
         try:
+
+            print(f"投喂内容：{messages}")
             response = self.client.chat.completions.create(
                 model=self.model, messages=messages, temperature=0.7, max_tokens=1500
             )

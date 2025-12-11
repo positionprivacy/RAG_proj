@@ -123,6 +123,7 @@ class VectorStore:
                 documents.append(content)
                 metadatas.append(metadata)
                 embeddings.append(embedding)
+                print(f"准备添加文档块 ID: {unique_id}, 内容: {content}")
 
         # 3. 批量添加到ChromaDB collection
         if ids:

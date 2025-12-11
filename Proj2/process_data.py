@@ -19,7 +19,7 @@ def main():
     vector_store = VectorStore(db_path=VECTOR_DB_PATH)
 
     # [关键修改] 注释掉清空操作，实现增量更新
-    # vector_store.clear_collection() 
+    vector_store.clear_collection() 
     
     print(f"当前向量库中已有 {vector_store.get_collection_count()} 条数据")
 
