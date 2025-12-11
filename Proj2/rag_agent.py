@@ -1,5 +1,5 @@
 from typing import List, Dict, Optional, Tuple, Any
-
+import json
 from openai import OpenAI
 
 from config import (
@@ -25,151 +25,247 @@ class RAGAgent:
         """
         TODO: 实现并调整系统提示词，使其符合课程助教的角色和回答策略
         """
-        self.system_prompt = (
-            "你是一位友好、专业且细心的课程助教，正在回答学生关于课程材料和作业的问题，同时也要保持自己通用大模型的各种能力。\n"
-            "你的回答尽量基于提供的【课程内容】上下文。\n"
-            "**回答策略:**\n"
-            "1. 如果学生问题和课程内容无关, 请自行回答, 无需参考后面要求，并在末尾注明该回答与【课程内容】无关, 为自行答复。"
-            "2. 仔细阅读【课程内容】。\n"
-            "3. 基于这些内容，用清晰、简洁的中文回答学生的问题。\n"
-            "4. 不要在对话中体现'在【课程内容】中查找'这件事情，把自己视为已经掌握了【课程内容】的助教。'\n"
-            "5. 务必在回答的末尾，使用 Markdown 格式（例如 `[文件名 - 页码X]`）列出所有你引用到的**来源信息**，以便学生查阅。\n"
-            "6. 保持助教的专业和鼓励语气。"
+        self.rag_system_prompt = (
+            "你是一位友好、专业且细心的课程助教。\n"
+            "你的任务是基于提供的【课程内容】回答学生问题。\n"
+            "**规则:**\n"
+            "1. 仔细阅读上下文，用清晰的中文回答。\n"
+            "2. 如果问题与课程无关且不属于闲聊，请礼貌拒绝。\n"
+            "3. 必须在回答末尾标注来源，格式：`[文件名 - 页码]`。\n"
         )
+        self.general_system_prompt = (
+            "你是一位博学、友好的智能助手，同时也是这门课的助教。\n"
+            "对于用户发起的闲聊或与课程无关的通用问题，请利用你的通用知识进行流畅、自然的回答。\n"
+            "不需要局限于课程内容，也不需要引用来源。"
+        )
+        self.quiz_system_prompt = (
+                "你是一位经验丰富的助教，也是考试出题人。\n"
+                "用户的请求可能包含'讲解'和'出题'两个部分，或者只是'出题'。\n"
+                "**任务:**\n"
+                "1. 基于【课程内容】，根据用户指令生成回答。\n"
+                "2. 如果用户要求出题，请编写一道高质量的题目（选择或简答），如果用户要求，请附带标准答案和解析（解析可以折叠或放在最后）。如果用户要求不提供答案，请先不要把答案输出。\n"
+                "3. 题目必须基于提供的上下文，不要凭空编造。但不必须是资料库中存在的原题。\n"
+                "4. 引用来源(如果题目来源于知识库中)。"
+            )
+    def _clean_text(self, text: str) -> str:
+        """
+        清洗字符串，移除无法编码的代理字符（Surrogates），防止 API 调用崩溃
+        """
+        if not text:
+            return ""
+        try:
+            # 尝试编码再解码，忽略错误字符
+            return text.encode('utf-8', 'ignore').decode('utf-8')
+        except Exception:
+            # 如果彻底失败，返回空或原始值
+            return ""
+    def _analyze_intent(self, query: str) -> Dict:
+        """
+        使用 LLM 分析用户意图，进行路由。
+        返回 JSON: {type, topic}
+        """
+        prompt = f"""
+        你是一个意图分类器。分析用户输入："{query}"
+        
+        返回严格的 JSON 格式（无Markdown），包含字段：
+        1. type: (str) 
+           - "greeting": 打招呼/闲聊 (如"你好", "在吗")
+           - "irrelevant": 与课程/研究/学习完全无关 (如"今天天气", "讲个笑话")
+           - "quiz": 要求出题/测验/考试/考考我 (包含"讲解并出题"的混合意图，只要有出题需求就算)
+           - "qa": 普通课程提问 (默认)
+        2. topic: (str) 提取核心知识点关键词，如果是闲聊则为空。不需要太精简，可以尽量保持原始内容。
+        
+        示例："你好" -> {{"type": "greeting", "topic": ""}}
+        示例："出个Attention的题" -> {{"type": "quiz", "topic": "Attention"}}
+        """
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1, # 低温保证格式
+                max_tokens=100
+            )
+            content = response.choices[0].message.content.strip()
+            # 清洗可能存在的 Markdown 标记
+            if content.startswith("```"):
+                content = content.replace("```json", "").replace("```", "")
+            return json.loads(content)
+        except:
+            # 降级：默认 QA
+            return {"type": "qa", "topic": query}
+    def _format_context(self, docs: List[Dict]) -> str:
+        context_parts = []
+        for i, doc in enumerate(docs):
+            content = doc.get("content", "")
+            metadata = doc.get("metadata", {})
+            file_name = metadata.get("filename", "未知文件")
+            page = metadata.get("page_number", 0)
+            page_label = f"页码{page}" if page else "无页码"
+            
+            source_info = f"[来源: {file_name} - {page_label}]"
+            context_parts.append(f"--- 片段 {i+1} ---\n{content}\n{source_info}\n")
+        return "\n".join(context_parts)
 
     def retrieve_context(
         self, query: str, top_k: int = TOP_K
     ) -> Tuple[str, List[Dict]]:
-        """检索相关上下文
-        实现检索相关上下文
-        要求：
-        1. 使用向量数据库检索相关文档
-        2. 格式化检索结果，构建上下文字符串
-        3. 每个检索结果需要包含来源信息（文件名和页码）
-        4. 返回格式化的上下文字符串和原始检索结果列表
         """
+        标准检索方法 (用于普通问答)
+        """
+        # 1. 使用标准检索
+        retrieved_docs = self.vector_store.search(query=query, top_k=top_k)
         
-        # 1. 使用向量数据库检索相关文档
-        retrieved_docs: List[Dict[str, Any]] = self.vector_store.search(query=query, top_k=top_k)
+        # 2. 调用通用格式化函数
+        context = self._format_context(retrieved_docs)
         
-        context_parts: List[str] = []
-
-        # 2. 格式化检索结果，构建上下文字符串
-        for i, doc in enumerate(retrieved_docs):
-            content = doc.get("content", "")
-            metadata = doc.get("metadata", {})
-            
-            # --- START: 适配上游 chunk 格式 ---
-            # 上游 chunk 格式中，文件信息和页码是顶层元数据
-            file_name = metadata.get("filename", "未知文件") # 使用 filename 键
-            page_number = metadata.get("page_number", 0)    # 使用 page_number 键
-            
-            # 格式化页码：如果 page_number > 0，则显示页码；否则显示“无页码”
-            page_label = f"页码{page_number}" if page_number else "无页码"
-            # --- END: 适配上游 chunk 格式 ---
-            
-            # 3. 每个检索结果包含来源信息
-            # 格式化上下文，便于LLM处理
-            source_info = f"[来源: {file_name} - {page_label}]"
-            context_parts.append(f"--- 课程内容片段 {i+1} ---\n{content}\n{source_info}\n")
-            
-        context = "\n".join(context_parts)
-        
-        # 4. 返回格式化的上下文字符串和原始检索结果列表
         return context, retrieved_docs
 
     def generate_response(
         self,
         query: str,
-        context: str,
+        context: Optional[str] = None,
         chat_history: Optional[List[Dict]] = None,
+        system_prompt: str = ""
     ) -> str:
-        """生成回答
-        
-        参数:
-            query: 用户问题
-            context: 检索到的上下文
-            chat_history: 对话历史
         """
-        messages = [{"role": "system", "content": self.system_prompt}]
-
+        生成回答：根据是否有 Context 动态构建 User Prompt
+        """
+        clean_sys_prompt = self._clean_text(system_prompt)
+        messages = [{"role": "system", "content": system_prompt}]
         if chat_history:
-            messages.extend(chat_history)
+            for msg in chat_history:
+                clean_msg = {
+                    "role": msg["role"],
+                    "content": self._clean_text(msg["content"])
+                }
+                messages.append(clean_msg)
 
-        """
-        TODO: 实现用户提示词
-        要求：
-        1. 包含相关的课程内容
-        2. 包含学生问题
-        3. 包含来源信息（文件名和页码）
-        4. 返回用户提示词
-        """
-        # 构造用户提示词，将上下文、问题和来源信息全部打包
-
-        print("生成回答时使用的上下文片段:", {context})
-        user_text = f"""
-请基于下面提供的【课程内容】来回答学生的问题。
+        # === 动态构建 User Prompt ===
+        if context:
+            # 场景 A: 有 RAG 上下文 (QA / Quiz)
+            clean_context = self._clean_text(context)
+            clean_query = self._clean_text(query)
+            
+            user_text = f"""
+请基于下面提供的【课程内容】来回答用户指令。
 
 ---
-【学生问题】
-{query}
+【用户指令】
+{clean_query}
 
 ---
 【课程内容】
-{context}
+{clean_context}
 
 ---
 请严格按照系统提示词的要求来组织你的回答。
 """
+        else:
+            # 场景 B: 无上下文 (Greeting / Irrelevant)
+            # 直接把用户问题发给大模型，不加任何 RAG 限制
+            user_text = query
 
         messages.append({"role": "user", "content": user_text})
-        
-        # 多模态接口示意（如需添加图片支持，可参考以下格式）：
-        # content_parts = [{"type": "text", "text": user_text}]
-        # content_parts.append({
-        #    "type": "image_url",
-        #    "image_url": {"url": f"data:image/png;base64,{base64_image}"}
-        # })
-        # messages.append({"role": "user", "content": content_parts})
 
         try:
             response = self.client.chat.completions.create(
-                model=self.model, messages=messages, temperature=0.7, max_tokens=1500
+                model=self.model, messages=messages, temperature=0.7
             )
-
             return response.choices[0].message.content
         except Exception as e:
-            return f"生成回答时出错: {str(e)}"
+            return f"生成回答出错: {str(e)}"
 
     def answer_question(
         self, query: str, chat_history: Optional[List[Dict]] = None, top_k: int = TOP_K
-    ) -> str: # 修改返回类型为 str (根据函数体)
-        """回答问题
-        
-        参数:
-            query: 用户问题
-            chat_history: 对话历史
-            top_k: 检索文档数量
+    ) -> str:
+        actual_query_to_llm = query 
+        # 1. 意图路由
+        print("  Thinking: 分析意图...")
+        intent = self._analyze_intent(query)
+        intent_type = intent.get("type", "qa")
+        topic = intent.get("topic", query)
+        print(f"  Intent: [{intent_type}] Topic: [{topic}]")
+
+        retrieved_docs = []
+        final_context = None
+        current_system_prompt = self.general_system_prompt # 默认为通用
+
+        # === 路由分支 ===
+
+        # 分支 A: 纯通用模式 (Greeting / Irrelevant) -> 不检索
+        if intent_type in ["greeting", "irrelevant"]:
+            # 不检索，final_context 保持为 None
+            # System Prompt 使用 general_system_prompt
+            pass 
+
+        # 分支 B: 出题模式 -> 混合检索
+        elif intent_type == "quiz":
+            current_system_prompt = self.quiz_system_prompt
+            retrieved_docs = self.vector_store.search_hybrid(query=topic, top_k=top_k, pool_size=20)
+            final_context = self._format_context(retrieved_docs)
+            if not final_context: final_context = "（未找到相关资料，请尝试根据通用知识出题）"
+
+        # 分支 C: 课程问答 -> 标准检索
+        else: # qa
+            print(f"  Retrieving: 搜索 [{topic}]...")
+            retrieved_docs = self.vector_store.search(query=topic, top_k=top_k)
             
-        返回:
-            生成的回答
-        """
-        # 核心RAG流程：检索 -> 增强 -> 生成
-        context, retrieved_docs = self.retrieve_context(query, top_k=top_k) # 
+            # === [新增] 阈值判断逻辑 ===
+            # 假设阈值设为 1.5 (你可以根据 log 调整)
+            SIMILARITY_THRESHOLD = 1.0 
+            
+            is_relevant = False
+            
+            if retrieved_docs:
+                # 获取第一条结果的距离
+                first_dist = retrieved_docs[0].get("distance", 999)
+                print(f"  > Top-1 Distance: {first_dist:.4f}") # 打印出来方便调试
+                
+                if first_dist < SIMILARITY_THRESHOLD:
+                    is_relevant = True
+                else:
+                    print(f"  ! 距离过大 (>{SIMILARITY_THRESHOLD})，判定为无关内容")
+            
+            # === 分支判断 ===
+            
+            if is_relevant:
+                # Case C1: 找到了 *高质量* 资料 -> 正常 RAG
+                current_system_prompt = self.rag_system_prompt
+                final_context = self._format_context(retrieved_docs)
+            else:
+                # Case C2: 没找到 或 结果太差 -> 优雅降级
+                print("  ! 检索结果为空或不相关，切换至通用回答模式")
+                
+                current_system_prompt = self.general_system_prompt
+                final_context = None
+                
+                # 注入通用回答指令
+                actual_query_to_llm = (
+                    f"{query}\n\n"
+                    "---------------------\n"
+                    "【系统指令】\n"
+                    "知识库检索结果为空（或相关度过低）。这意味着课程资料中没有提及此内容。\n"
+                    "请执行以下操作：\n"
+                    "1. 首先明确声明：'**根据当前的课程资料，未找到与该问题相关的内容。**'\n"
+                    "2. 然后说：'以下是我基于通用知识为您提供的解答：'\n"
+                    "3. 最后基于你的通用知识库回答该问题。"
+                )
 
-        if not context:
-            # 当未检索到任何内容时的默认上下文
-            context = "（未检索到特别相关的课程材料，请告知学生）"
+        # 2. 生成回答
+        # 注意：这里传入的是 actual_query_to_llm
+        answer = self.generate_response(
+            query=actual_query_to_llm, 
+            context=final_context, 
+            chat_history=chat_history,
+            system_prompt=current_system_prompt
+        )
 
-        answer = self.generate_response(query, context, chat_history)
-
-        # 这里我们只返回了回答，如果您希望在最终结果中包含检索到的文档，可以修改返回类型
         return answer
 
     def chat(self) -> None:
         """交互式对话"""
         print("=" * 60)
-        print("欢迎使用智能课程助教系统！")
+        print("欢迎使用智能课程助教系统！(已启用意图路由 & 随机出题)")
         print("=" * 60)
 
         chat_history = []
