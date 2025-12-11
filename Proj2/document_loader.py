@@ -61,6 +61,11 @@ class DocumentLoader:
             
             if response.status_code == HTTPStatus.OK:
                 desc = response.output.choices[0].message.content[0]['text']
+                if desc:
+                    print(f"  ✔️ 图片处理成功: {desc}")
+                    # 返回格式化的描述
+                else:
+                    print(f"  ! 图片无描述内容")
                 return f"\n[图片内容描述]: {desc}\n"
             else:
                 print(f"  ! 图片处理失败: {response.message}")
