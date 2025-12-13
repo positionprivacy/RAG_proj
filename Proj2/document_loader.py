@@ -100,23 +100,17 @@ class DocumentLoader:
             return ""
         
         # 摘要提示词 (System Prompt: 定义角色和任务)
-        system_instruction = "你是一位专业的总结助手。请将用户提供的完整文件内容总结为一个简洁、准确的段落，保留核心要点和技术术语。总结内容需精炼，40字以内。"
-        
-        # 限制 LLM 输入长度，避免摘要任务本身超长
-        MAX_INPUT_LENGTH = 6000 # 设定一个合理的输入长度，防止API限制
-        if len(text) > MAX_INPUT_LENGTH:
-             text_to_summarize = text[:MAX_INPUT_LENGTH] + "...\n[文本已截断，只总结前部分内容]"
-        else:
-             text_to_summarize = text
-             
+        system_instruction = "你是一位专业的总结助手。请将下面的完整文件内容总结为一个简洁、准确的段落，保留核心要点和技术术语，不要增加文件内容中不存在的内容。总结内容前面加上文件涉及的课程名称/三级学科名称，总结需概括、精炼，严格保证50字以内。"
+
+        prompt = system_instruction + "\n\n请基于以下内容生成摘要：\n" + text.strip()
+
         messages = [
-            {"role": "system", "content": system_instruction},
-            {"role": "user", "content": text_to_summarize} # 直接将文本作为用户输入“上传”给模型
+            {"role": "user", "content": prompt} # 直接将文本作为用户输入“上传”给模型,
         ]
 
         try:
             response = self.client.chat.completions.create(
-                model=config.MODEL_NAME, messages=messages, temperature=0.7, max_tokens=1500
+                model=config.MODEL_NAME, messages=messages, temperature=0.5, max_tokens=100
             )
 
             
@@ -124,8 +118,8 @@ class DocumentLoader:
 
         except Exception as e:
             print(f" ! 摘要生成失败: {e}")
-            # 摘要失败时，返回前200字符作为备用“摘要”
-            return text[:200] + ("... (摘要失败，使用前段文本)" if len(text) > 200 else "")
+            # 摘要失败时，返回前100字符作为备用“摘要”
+            return text[:100] + ("... (摘要失败，使用前段文本)" if len(text) > 200 else "")
         
         return summary
 

@@ -236,6 +236,19 @@ class VectorStore:
                 
         return formatted_results
 
+    def get_overall_description(self) -> None:
+        """生成向量库的整体内容描述"""
+        docs = self.collection.get(include=['metadatas'])
+        descriptions = set()
+        for meta in docs['metadatas']:
+            desc = meta.get('summary', None)
+            if desc:
+                descriptions.add(desc)
+                
+        overall_description = "\n".join(descriptions)
+
+        return overall_description
+
     def clear_collection(self) -> None:
         """清空collection"""
         self.chroma_client.delete_collection(name=self.collection_name)

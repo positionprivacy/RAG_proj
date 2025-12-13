@@ -4,7 +4,7 @@ import os
 # 阿里云百炼的 API Key (sk-开头)
 # 建议不要直接把 Key 提交到 Github/Canvas，可以使用 os.getenv 从环境变量读取，
 # 或者提交前把这里删掉。
-OPENAI_API_KEY = "sk-e3ab4e42d2ce42aa96f2452cb2176404" 
+OPENAI_API_KEY = "sk-3ff3e9b876734085a25f997aad103ba8" 
 
 # 阿里云百炼兼容 OpenAI 的 Base URL (固定地址)
 OPENAI_API_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1" 
