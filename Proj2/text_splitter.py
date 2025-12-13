@@ -100,7 +100,8 @@ class TextSplitter:
                     "filetype": filetype,
                     "course_name": course_name, # <--- [修改] 传递课程名称到元数据
                     "page_number": doc.get("page_number", 0),
-                    "chunk_id": 0, 
+                    "chunk_id": 0, # 这里不切分，ID默认为0
+                    "summary": doc.get("summary", "")
                 }
                 chunks_with_metadata.append(chunk_data)
 
@@ -116,6 +117,9 @@ class TextSplitter:
                         "course_name": course_name, # <--- [修改] 传递课程名称到元数据
                         "page_number": 0, 
                         "chunk_id": i,    
+                        "page_number": 0, # TXT/Word通常没有页码概念
+                        "chunk_id": i,    # 记录切分块的序号，检索时可用于排序
+                        "summary": doc.get("summary", "")
                     }
                     chunks_with_metadata.append(chunk_data)
 

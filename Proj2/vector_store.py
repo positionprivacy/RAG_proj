@@ -228,55 +228,68 @@ class VectorStore:
             print("\n没有文档块被添加到向量数据库。")
 
 
-    def search(self, query: str, top_k: int = TOP_K) -> List[Dict]:
-        """搜索相关文档
+    # def search(self, query: str, top_k: int = TOP_K) -> List[Dict]:
+    #     """搜索相关文档
 
-        实现向量相似度搜索
-        要求：
-        1. 首先获取查询文本的embedding向量（调用self.get_embedding）
-        2. 使用self.collection进行向量搜索, 得到top_k个结果
-        3. 格式化返回结果，每个结果包含：
-            - content: 文档内容
-            - metadata: 元数据（文件名、页码等）
-        4. 返回格式化的结果列表
-        """
+    #     实现向量相似度搜索
+    #     要求：
+    #     1. 首先获取查询文本的embedding向量（调用self.get_embedding）
+    #     2. 使用self.collection进行向量搜索, 得到top_k个结果
+    #     3. 格式化返回结果，每个结果包含：
+    #         - content: 文档内容
+    #         - metadata: 元数据（文件名、页码等）
+    #     4. 返回格式化的结果列表
+    #     """
 
-        # 1. 获取查询文本的embedding向量
-        query_embedding = self.get_embedding(query)
+    #     # 1. 获取查询文本的embedding向量
+    #     query_embedding = self.get_embedding(query)
         
-        if not query_embedding:
-            print("查询embedding生成失败，无法进行搜索。")
-            return []
+    #     if not query_embedding:
+    #         print("查询embedding生成失败，无法进行搜索。")
+    #         return []
 
-        # 2. 使用self.collection进行向量搜索
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            include=['documents', 'metadatas', 'distances'] # 包含文档内容、元数据和距离（相似度）
-        )
+    #     # 2. 使用self.collection进行向量搜索
+    #     results = self.collection.query(
+    #         query_embeddings=[query_embedding],
+    #         n_results=top_k,
+    #         include=['documents', 'metadatas', 'distances'] # 包含文档内容、元数据和距离（相似度）
+    #     )
         
-        # 3. 格式化返回结果
-        formatted_results: List[Dict] = []
+    #     # 3. 格式化返回结果
+    #     formatted_results: List[Dict] = []
         
-        # ChromaDB的查询结果是嵌套列表，需要解包
-        if results and results.get("documents") and results.get("metadatas"):
+    #     # ChromaDB的查询结果是嵌套列表，需要解包
+    #     if results and results.get("documents") and results.get("metadatas"):
             
-            # 假设只查询了一个embedding，所以我们取第一个元素 [0]
-            documents = results["documents"][0]
-            metadatas = results["metadatas"][0]
-            distances = results["distances"][0]
+    #         # 假设只查询了一个embedding，所以我们取第一个元素 [0]
+    #         documents = results["documents"][0]
+    #         metadatas = results["metadatas"][0]
+    #         distances = results["distances"][0]
             
-            for doc, meta, dist in zip(documents, metadatas, distances):
-                formatted_results.append(
-                    {
-                        "content": doc,
-                        "metadata": meta,
-                        # 距离越小，相似度越高。1 - distance 简单估算相似度
-                        "distance": dist, 
-                    }
-                )
+    #         for doc, meta, dist in zip(documents, metadatas, distances):
+    #             formatted_results.append(
+    #                 {
+    #                     "content": doc,
+    #                     "metadata": meta,
+    #                     # 距离越小，相似度越高。1 - distance 简单估算相似度
+    #                     "distance": dist, 
+    #                 }
+    #             )
                 
-        return formatted_results
+    #     return formatted_results
+
+    def get_overall_description(self) -> None:
+        """生成向量库的整体内容描述"""
+        docs = self.collection.get(include=['metadatas'])
+        descriptions = set()
+        for meta in docs['metadatas']:
+            desc = meta.get('summary', None)
+            if desc:
+                descriptions.add(desc)
+                
+        overall_description = "\n".join(descriptions)
+
+        return overall_description
 
     def clear_collection(self) -> None:
         """清空collection"""
