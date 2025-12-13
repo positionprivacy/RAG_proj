@@ -44,6 +44,19 @@ class VectorStore:
         self.collection = self.chroma_client.get_or_create_collection(
             name=collection_name, metadata={"description": "课程材料向量数据库"}
         )
+    def get_all_courses(self) -> List[str]:
+        """获取数据库中所有唯一的课程名称"""
+        try:
+            # 只获取 metadata，开销较小
+            result = self.collection.get(include=['metadatas'])
+            courses = set()
+            for meta in result['metadatas']:
+                if meta and 'course_name' in meta:
+                    courses.add(meta['course_name'])
+            return list(courses)
+        except Exception as e:
+            print(f"获取课程列表失败: {e}")
+            return []
 
     def get_embedding(self, text: str) -> List[float]:
         """获取文本的向量表示
@@ -63,29 +76,63 @@ class VectorStore:
         except Exception as e:
             print(f"获取embedding失败: {e}")
             return []
-    def search_hybrid(self, query: str, top_k: int = 3, pool_size: int = 20) -> List[Dict]:
-        """
-        混合检索策略 (Anchor & Explore)：
-        用于解决"出题重复"问题，同时保证相关性。
-        
-        策略：
-        1. 检索 Top-pool_size (例如前20个) 相关文档。
-        2. 必定保留 Rank 1 文档 (锚点)，确保核心知识准确。
-        3. 从剩余的 pool_size-1 个文档中，随机采样 top_k-1 个 (探索)。
-        """
+    def search(self, query: str, top_k: int = TOP_K, course_filter: str = None) -> List[Dict]:
         query_embedding = self.get_embedding(query)
         if not query_embedding: return []
 
-        # 1. 扩大检索范围 (Retrieve Top-N)
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=pool_size, 
-            include=['documents', 'metadatas', 'distances']
-        )
+        # 构造过滤条件
+        where_clause = {}
+        # 如果指定了课程，且不是"全局搜索"（这是一个约定俗成的保留字），则过滤
+        if course_filter and course_filter not in ["全局搜索", "All"]:
+            where_clause = {"course_name": course_filter}
+
+        # 如果 where_clause 为空，ChromaDB 会忽略它（即全局搜索）
+        # 注意：ChromaDB 要求 where 参数如果不传则不能为 None 或空字典，需根据版本处理
+        # 最稳妥的写法是判断一下：
+        kwargs = {
+            "query_embeddings": [query_embedding],
+            "n_results": top_k,
+            "include": ['documents', 'metadatas', 'distances']
+        }
+        if where_clause:
+            kwargs["where"] = where_clause
+
+        results = self.collection.query(**kwargs)
+        
+        formatted_results = []
+        if results and results.get("documents") and results.get("metadatas"):
+            documents = results["documents"][0]
+            metadatas = results["metadatas"][0]
+            distances = results["distances"][0]
+            
+            for doc, meta, dist in zip(documents, metadatas, distances):
+                formatted_results.append({
+                    "content": doc,
+                    "metadata": meta,
+                    "distance": dist,
+                })
+        return formatted_results
+    def search_hybrid(self, query: str, top_k: int = 3, pool_size: int = 20, course_filter: str = None) -> List[Dict]:
+        query_embedding = self.get_embedding(query)
+        if not query_embedding: return []
+
+        # 构造过滤条件
+        where_clause = {}
+        if course_filter and course_filter not in ["全局搜索", "All"]:
+            where_clause = {"course_name": course_filter}
+
+        kwargs = {
+            "query_embeddings": [query_embedding],
+            "n_results": pool_size,
+            "include": ['documents', 'metadatas', 'distances']
+        }
+        if where_clause:
+            kwargs["where"] = where_clause
+
+        results = self.collection.query(**kwargs)
         
         if not results['documents']: return []
 
-        # 解包数据
         candidates = []
         docs = results['documents'][0]
         metas = results['metadatas'][0]
@@ -96,17 +143,12 @@ class VectorStore:
 
         if not candidates: return []
 
-        # 2. 核心逻辑：锚点 + 随机
         final_selection = []
-        
-        # (A) 锚点：放入相关度最高的那个
+        # 锚点
         final_selection.append(candidates[0])
-        
-        # (B) 探索：从剩下的里面随机选
+        # 探索
         remaining = candidates[1:]
-        # 需要选取的数量
         sample_count = min(len(remaining), top_k - 1)
-        
         if sample_count > 0:
             final_selection.extend(random.sample(remaining, sample_count))
             

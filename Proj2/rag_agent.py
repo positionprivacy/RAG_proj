@@ -125,7 +125,8 @@ class RAGAgent:
         query: str,
         context: Optional[str] = None,
         chat_history: Optional[List[Dict]] = None,
-        system_prompt: str = ""
+        system_prompt: str = "",
+        temperature: float = 0.7
     ) -> str:
         """
         生成回答：根据是否有 Context 动态构建 User Prompt
@@ -171,14 +172,14 @@ class RAGAgent:
 
             print(f"投喂内容：{messages}")
             response = self.client.chat.completions.create(
-                model=self.model, messages=messages, temperature=0.7
+                model=self.model, messages=messages, temperature=temperature
             )
             return response.choices[0].message.content
         except Exception as e:
             return f"生成回答出错: {str(e)}"
 
     def answer_question(
-        self, query: str, chat_history: Optional[List[Dict]] = None, top_k: int = TOP_K
+        self, query: str, chat_history: Optional[List[Dict]] = None, top_k: int = TOP_K,course_filter: str = "全局搜索",temperature: float = 0.7
     ) -> str:
         actual_query_to_llm = query 
         # 1. 意图路由
@@ -203,14 +204,14 @@ class RAGAgent:
         # 分支 B: 出题模式 -> 混合检索
         elif intent_type == "quiz":
             current_system_prompt = self.quiz_system_prompt
-            retrieved_docs = self.vector_store.search_hybrid(query=topic, top_k=top_k, pool_size=20)
+            retrieved_docs = self.vector_store.search_hybrid(query=topic, top_k=top_k, pool_size=20,course_filter=course_filter)
             final_context = self._format_context(retrieved_docs)
             if not final_context: final_context = "（未找到相关资料，请尝试根据通用知识出题）"
 
         # 分支 C: 课程问答 -> 标准检索
         else: # qa
             print(f"  Retrieving: 搜索 [{topic}]...")
-            retrieved_docs = self.vector_store.search(query=topic, top_k=top_k)
+            retrieved_docs = self.vector_store.search(query=topic, top_k=top_k, course_filter=course_filter)
             
             # === [新增] 阈值判断逻辑 ===
             # 假设阈值设为 1.5 (你可以根据 log 调整)
@@ -259,7 +260,8 @@ class RAGAgent:
             query=actual_query_to_llm, 
             context=final_context, 
             chat_history=chat_history,
-            system_prompt=current_system_prompt
+            system_prompt=current_system_prompt,
+            temperature=temperature
         )
 
         return answer

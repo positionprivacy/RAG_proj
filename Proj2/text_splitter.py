@@ -86,24 +86,25 @@ class TextSplitter:
             content = doc.get("content", "")
             filetype = doc.get("filetype", "")
             filename = doc.get("filename", "unknown")
+            
+            # [新增] 提取 process_data.py 中注入的课程名称
+            # 如果没有，默认为"未知课程"
+            course_name = doc.get("course_name", "未知课程")
 
             # 策略 A: 对于 PDF 和 PPT，老师要求不再二次切分 (按页/幻灯片)
-            # 优点：保持页面完整性，利于引用 "第几页"
-            # 风险：如果某一页字数特别多（加上Qwen-VL的描述后），可能超过模型窗口。
-            # 这里我们遵循老师模板，不做切分。
             if filetype in [".pdf", ".pptx"]:
                 chunk_data = {
                     "content": doc.get("summary", "") + content,
                     "filename": filename,
                     "filepath": doc.get("filepath", ""),
                     "filetype": filetype,
+                    "course_name": course_name, # <--- [修改] 传递课程名称到元数据
                     "page_number": doc.get("page_number", 0),
-                    "chunk_id": 0, # 这里不切分，ID默认为0
+                    "chunk_id": 0, 
                 }
                 chunks_with_metadata.append(chunk_data)
 
             # 策略 B: 对于纯文本、Word 文档和代码文件，进行滑动窗口切分
-            # 注意：我在这里加上了 .py，因为代码文件需要被切分
             elif filetype in [".docx", ".txt", ".py"]:
                 chunks = self.split_text(content)
                 for i, chunk in enumerate(chunks):
@@ -112,8 +113,9 @@ class TextSplitter:
                         "filename": filename,
                         "filepath": doc.get("filepath", ""),
                         "filetype": filetype,
-                        "page_number": 0, # TXT/Word通常没有页码概念
-                        "chunk_id": i,    # 记录切分块的序号，检索时可用于排序
+                        "course_name": course_name, # <--- [修改] 传递课程名称到元数据
+                        "page_number": 0, 
+                        "chunk_id": i,    
                     }
                     chunks_with_metadata.append(chunk_data)
 
