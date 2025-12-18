@@ -4,7 +4,7 @@ import os
 # 阿里云百炼的 API Key (sk-开头)
 # 建议不要直接把 Key 提交到 Github/Canvas，可以使用 os.getenv 从环境变量读取，
 # 或者提交前把这里删掉。
-OPENAI_API_KEY = "sk-68b64210b5a2469ab706ed40afcc40f6" 
+OPENAI_API_KEY = "sk-d6610f7e657d41f0bd50d35d8f717212" 
 
 # 阿里云百炼兼容 OpenAI 的 Base URL (固定地址)
 OPENAI_API_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1" 
@@ -34,6 +34,7 @@ VECTOR_DB_PATH = "./vector_db"
 # 集合名称 (相当于数据库中的表名)
 COLLECTION_NAME = "course_rag_collection" 
 
+RERANK_MODEL = "gte-rerank" 
 
 # ================= 文本处理配置 =================
 # 切分块大小：中文文档建议 300-500 左右，太大会导致检索不准，太小会丢失语义
