@@ -163,8 +163,8 @@ class DocumentLoader:
         page_tasks = [] # (page_text, list_of_futures)
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            for i, page in enumerate(reader.pages):
-                page_text = page.extract_text() or ""
+            for i, page in enumerate(doc_fitz):
+                page_text = page.get_text() or ""
                 image_futures = []
 
                 if doc_fitz and i < len(doc_fitz):
@@ -196,7 +196,6 @@ class DocumentLoader:
                 
                 full_content = f"--- 第 {i+1} 页 ---\n{text}\n{descriptions}"
                 results.append({"text": full_content})
-            
         return results
 
     def load_pptx(self, file_path: str) -> List[Dict]:

@@ -289,6 +289,44 @@ class VectorStore:
         else:
             print("\n没有文档块被添加到向量数据库。")
 
+    def delete_documents_by_filename(self, filename: str) -> None:
+        """根据文件名删除对应的文档块"""
+    
+        # 先查询出所有对应的文档块ID
+        ids_to_delete = []
+        
+        # 注意：ChromaDB get()方法不支持直接包含'ids'，需要从结果中提取
+        try:
+            # 获取集合中的所有数据（只包含元数据）
+            results = self.collection.get(include=['metadatas'])
+            
+            # 从结果中提取ID和元数据
+            all_ids = results['ids']  # IDs总是会被返回
+            all_metadatas = results['metadatas']  # 只请求了元数据
+            
+            # 遍历所有文档块
+            for doc_id, metadata in zip(all_ids, all_metadatas):
+                # 检查filename是否匹配
+                if metadata and (
+                    metadata.get('filename') == filename or 
+                    filename in metadata.get('filepath', '')
+                ):
+                    ids_to_delete.append(doc_id)
+                    
+        except Exception as e:
+            print(f"查询文档块时出错: {e}")
+            return
+        
+        # 执行删除操作
+        if ids_to_delete:
+            try:
+                self.collection.delete(ids=ids_to_delete)
+                print(f"已删除文件 '{filename}' 对应的 {len(ids_to_delete)} 个文档块。")
+            except Exception as e:
+                print(f"删除文档块时出错: {e}")
+        else:
+            print(f"未找到文件 '{filename}' 对应的文档块，无需删除。")
+
 
     # def search(self, query: str, top_k: int = TOP_K) -> List[Dict]:
     #     """搜索相关文档
