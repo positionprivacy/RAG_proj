@@ -5,7 +5,9 @@ import chromadb
 from chromadb.config import Settings
 from openai import OpenAI
 from tqdm import tqdm
-
+import dashscope
+from http import HTTPStatus
+from config import RERANK_MODEL
 from config import (
     VECTOR_DB_PATH,
     COLLECTION_NAME,
@@ -76,6 +78,66 @@ class VectorStore:
         except Exception as e:
             print(f"获取embedding失败: {e}")
             return []
+    def search_with_rerank(self, query: str, top_k: int = 3, course_filter: str = None) -> List[Dict]:
+        """
+        [算法升级] 检索 + 重排序 (Reranking)
+        流程: Vector Search (Top-20) -> Rerank Model -> Top-K
+        """
+        # 1. 扩大召回：先检索 20 条 (粗排)
+        # 直接调用你现有的 search 方法，这样就自动应用了 course_filter 分区逻辑
+        initial_k = 20 
+        candidates = self.search(query, top_k=initial_k, course_filter=course_filter)
+        
+        if not candidates:
+            return []
+
+        # 2. 准备 Rerank 数据
+        # 提取候选文档的文本内容
+        docs_content = [doc['content'] for doc in candidates]
+        
+        try:
+            print(f"  > [Rerank] 正在对 {len(candidates)} 条候选进行精排 (分区: {course_filter})...")
+            
+            # 3. 调用 GTE-Rerank 模型
+            response = dashscope.TextReRank.call(
+                model=RERANK_MODEL,
+                query=query,
+                documents=docs_content,
+                top_n=top_k, # 直接让 API 返回最好的 k 个
+                return_documents=True
+            )
+            
+            if response.status_code == HTTPStatus.OK:
+                # response.output.results 包含: [{'index': 0, 'relevance_score': 0.98, ...}, ...]
+                reranked_results = []
+                
+                for item in response.output.results:
+                    original_idx = item['index']
+                    score = item['relevance_score']
+                    
+                    # 找回原始文档信息
+                    doc = candidates[original_idx]
+                    
+                    # [关键算法点] 更新距离/分数
+                    # 向量库用的是 distance (越小越好)，Rerank 返回的是 score (越大越好，0-1之间)
+                    # 我们把这个分数存入 doc，方便后续 Agent 判断是否拒识
+                    doc['rerank_score'] = score
+                    
+                    reranked_results.append(doc)
+                
+                # 打印最高分，方便调试
+                if reranked_results:
+                    print(f"  > [Rerank] 完成，Top-1 相关性得分: {reranked_results[0]['rerank_score']:.4f}")
+                
+                return reranked_results
+                
+            else:
+                print(f"Rerank API 调用失败: {response.message}，降级为普通向量检索。")
+                return candidates[:top_k]
+
+        except Exception as e:
+            print(f"Rerank 异常: {e}，降级为普通向量检索。")
+            return candidates[:top_k]
     def search(self, query: str, top_k: int = TOP_K, course_filter: str = None) -> List[Dict]:
         query_embedding = self.get_embedding(query)
         if not query_embedding: return []

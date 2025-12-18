@@ -32,6 +32,7 @@ class RAGAgent:
             "1. 仔细阅读上下文，用清晰的中文回答。\n"
             "2. 如果问题与课程无关且不属于闲聊，请礼貌拒绝。\n"
             "3. 必须在回答末尾标注来源，格式：`[文件名 - 页码]`。\n"
+            "4. 如果需要回答的内容与【课程内容】完全无关，你只需说明与其无关，然后使用通用能力进行回答。"
         )
         self.general_system_prompt = (
             "你是一位博学、友好的智能助手，同时也是这门课的助教。\n"
@@ -46,7 +47,8 @@ class RAGAgent:
             "1. 基于【课程内容】，根据用户指令生成回答。\n"
             "2. 如果用户要求出题，请编写一道高质量的题目（选择或简答），如果用户要求，请附带标准答案和解析（解析可以折叠或放在最后）。如果用户要求不提供答案，请先不要把答案输出。\n"
             "3. 题目必须基于提供的上下文，不要凭空编造。但不必须是资料库中存在的原题。\n"
-            "4. 引用来源(如果题目来源于知识库中或者知识库中有相关内容)。格式：`[文件名 - 页码]`"
+            "4. 引用来源(如果题目来源于知识库中或者知识库中有相关内容)。格式：`[文件名 - 页码]`\n"
+            "5. 如果需要回答的内容与【课程内容】完全无关，你只需说明与其无关，然后使用通用能力进行回答。"
         )
         
     def _get_all_courses(self) -> List[str]:
@@ -145,6 +147,38 @@ class RAGAgent:
             source_info = f"[来源: {file_name} - {page_label}]"
             context_parts.append(f"--- 片段 {i+1} ---\n{content}\n{source_info}\n")
         return "\n".join(context_parts)
+    def _manage_history(self, history: List[Dict], max_rounds: int = 10) -> List[Dict]:
+        """
+        [Feature 4] 历史记录管理：滑动窗口
+        保留 System Prompt，并截取最近的 max_rounds 轮对话。
+        """
+        if not history:
+            return []
+        
+        # 如果历史记录很少，直接返回
+        # 假设一轮包含 user 和 assistant 两条，所以乘以 2
+        if len(history) <= max_rounds * 2:
+            return history
+            
+        # 策略：保留最早的 System Prompt (如果有)，然后取最新的 N 条
+        # 这样既能记住人设，又能记住最近的上下文
+        managed_history = []
+        
+        # 检查第一条是不是 system，如果是，保留它
+        start_idx = 0
+        if history[0]["role"] == "system":
+            managed_history.append(history[0])
+            start_idx = 1
+            
+        # 截取最后 N 条 (倒数)
+        # 例如保留最近 20 条消息 (10轮)
+        keep_count = max_rounds * 2
+        recent_history = history[-keep_count:]
+        
+        managed_history.extend(recent_history)
+        
+        print(f"  [History] 已截断历史记录: {len(history)} -> {len(managed_history)} 条")
+        return managed_history
 
     def retrieve_context(
         self, query: str, top_k: int = TOP_K
@@ -174,12 +208,17 @@ class RAGAgent:
         clean_sys_prompt = self._clean_text(system_prompt)
         messages = [{"role": "system", "content": system_prompt}]
         if chat_history:
+            # 清洗历史
+            cleaned_history = []
             for msg in chat_history:
-                clean_msg = {
+                cleaned_history.append({
                     "role": msg["role"],
                     "content": self._clean_text(msg["content"])
-                }
-                messages.append(clean_msg)
+                })
+            
+            # 截断历史 (保留最近 10 轮)
+            short_history = self._manage_history(cleaned_history, max_rounds=10)
+            messages.extend(short_history)
 
         # === 动态构建 User Prompt ===
         if context:
@@ -250,29 +289,42 @@ class RAGAgent:
 
         # 分支 C: 课程问答 -> 标准检索
         else: # qa
-            print(f"  Retrieving: 搜索 [{topic}]...")
-            retrieved_docs = self.vector_store.search(query=topic, top_k=top_k, course_filter=course_filter)
+            print(f"  Retrieving: 搜索 [{topic}] in [{course_filter}]...")
             
-            # === [新增] 阈值判断逻辑 ===
-            # 假设阈值设为 1.0 (你可以根据 log 调整)
-            SIMILARITY_THRESHOLD = 1.0 
+            # [修改] 使用带 Rerank 的检索
+            retrieved_docs = self.vector_store.search_with_rerank(
+                query=topic, 
+                top_k=top_k, 
+                course_filter=course_filter
+            )
+            
+            # [算法优化] 基于 Rerank 分数的智能拒识
+            # GTE-Rerank 的分数通常在 0~1 之间 (Sigmoid output)
+            # 经验阈值：< 0.35 通常表示不太相关，< 0.1 表示完全无关
+            # 你可以根据实际测试调整这个阈值
+            RERANK_THRESHOLD = 0.25
             
             is_relevant = False
             
             if retrieved_docs:
-                # 获取第一条结果的距离
-                first_dist = retrieved_docs[0].get("distance", 999)
-                print(f"  > Top-1 Distance: {first_dist:.4f}") # 打印出来方便调试
+                # 检查第一条（最相关的一条）的分数
+                # 注意：如果降级为普通检索，可能没有 rerank_score 字段，需兼容
+                top_score = retrieved_docs[0].get('rerank_score')
                 
-                if first_dist < SIMILARITY_THRESHOLD:
-                    is_relevant = True
+                if top_score is not None:
+                    # Rerank 成功，使用精确分数判断
+                    if top_score > RERANK_THRESHOLD:
+                        is_relevant = True
+                    else:
+                        print(f"  ! Rerank 分数过低 ({top_score:.4f})，判定无关")
                 else:
-                    print(f"  ! 距离过大 (>{SIMILARITY_THRESHOLD})，判定为无关内容")
-            
-            # === 分支判断 ===
-            
+                    # Rerank 失败或降级，使用原来的 distance 判断 (兼容旧逻辑)
+                    top_dist = retrieved_docs[0].get('distance', 999)
+                    if top_dist < 1.5: # 假设向量距离阈值
+                        is_relevant = True
+
             if is_relevant:
-                # Case C1: 找到了 *高质量* 资料 -> 正常 RAG
+                # Case C1: 找到了高质量资料 -> 正常 RAG
                 current_system_prompt = self.rag_system_prompt
                 final_context = self._format_context(retrieved_docs)
             else:
@@ -305,6 +357,35 @@ class RAGAgent:
         )
 
         return answer
+    def generate_session_title(self, query: str) -> str:
+        """
+        [新增] 根据用户的第一句输入，利用大模型生成一个简短的会话标题
+        """
+        prompt = f"""
+        请根据用户的输入生成一个极其简短的对话标题。
+        要求：
+        1. 长度控制在 6-10 个汉字以内。
+        2. 不要包含“用户问”、“关于”等废话，直接概括核心主题。
+        3. 不要使用引号或标点符号。
+        
+        用户输入："{query}"
+        """
+        try:
+            # 使用较低的 temperature 保证标题简洁稳定
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3, 
+                max_tokens=20 # 限制输出长度
+            )
+            title = response.choices[0].message.content.strip()
+            
+            # 清洗一下，防止模型输出引号
+            return title.replace('"', '').replace("'", "").replace("。", "")
+        except Exception as e:
+            print(f"标题生成失败: {e}")
+            # 降级策略：如果生成失败，还是截取前10个字
+            return query[:10] + "..."
 
     def chat(self) -> None:
         """交互式对话"""
